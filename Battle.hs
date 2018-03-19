@@ -269,7 +269,8 @@ humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runSta
     putStrLn "chrs: Tells you which characters live along with their ids"
     putStrLn "moves [chrID]: Tells you the moves of a character"
     putStrLn "(statusOf/info/i) [chrID]: Tells you the current status of a character"
-    putStrLn "do [mvID] [zero or more target ids, depending on move's target mode]: Perform a move"
+    putStrLn "do [mvID (self move)]: Perform a self-targeting move"
+    putStrLn "do [mvID (any/enemy/ally move)] [targetID]: Perform a character targeting move"
     putStrLn "(prev/pr): Previous action of the current character"
     return False
   onlyState $ when' (cmd `elem` prevCmds) $ lift $ do
@@ -307,7 +308,7 @@ humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runSta
     mvTable <- fmap getMoveTable $ lift $ getChr yourID
     lift $ fromIO $ putStrLn "Here are your moves:"
     lift $ fromIO $ forM_ mvTable $ \(mvID,mv) -> do
-      putStrLn $ "Name: " ++ getMoveName mv ++ " (type in " ++ mvID ++ " to use)"
+      putStrLn $ "Name: " ++ getMoveName mv ++ " (id " ++ mvID ++ ")"
       putStrLn $ "  Description: " ++ getMoveDescription mv
       putStrLn $ "  Targets: " ++ (show $ getTargetMode mv)
       putStrLn $ "  Inspiration needed: " ++ (show $ inspirationNeeded mv)

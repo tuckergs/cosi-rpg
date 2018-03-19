@@ -165,8 +165,9 @@ tinoEnigmaCode [tID,eID] = do
   fromIO $ putStrLn "Tino blows your mind!"
   when (rndNum `elem` [0,1,2]) $
     fromIO $ putStrLn $ "With " ++ (show ele) ++ "(tm)!"
-  when (rndNum == 3) $
-    fromIO $ putStrLn $ "By asking TwixNinja411 to decrement your health manually for Assignment 3!"
+  when (rndNum == 3) $ do
+    rndAsgnNum <- (fromRNG $ randomR (1,4) :: BattleIO Int)
+    fromIO $ putStrLn $ "By asking tuckergs to decrement your health manually for Assignment " ++ (show rndAsgnNum) ++ "!"
   damageTarget tID eID ele pawaa
 
 
