@@ -24,7 +24,7 @@ import Data.Bits (xor)
 
 type BattleIO = ExceptT BResult (StateT BEnv (StateT StdGen IO))
 
-data BResult = LWin | RWin | Tie
+data BResult = LWin | RWin | Tie | Exit
 
 type ChrID = String
 
@@ -254,6 +254,9 @@ runMove yourID mv ls = do
       fromIO $ putStrLn $ "More inspiration is required to use this move!"
       return False
     else do
+      when (requiredInsp > 0) $ fromIO $ do
+        putStrLn $ yourName ++ " spends " ++ (show requiredInsp) ++ " inspiration!"
+        putStrLn $ yourName ++ " now has " ++ (show $ yourInsp - requiredInsp) ++ " inspiration!"
       fromIO $ putStrLn $ yourName ++ " uses " ++ getMoveName mv ++ "!"
       modChrBy yourID $ \chr -> chr { getInspiration = yourInsp - requiredInsp }
       getMoveCode mv ls
@@ -264,14 +267,15 @@ humanTurnParser :: ChrID -> String -> BattleIO Bool
 humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runStateTF False $ do
   cmd <- lift $ getNextWord
   let prevCmds = ["prev","pr"]
-  let possibleCmds = prevCmds ++ ["wat","chrs","statusOf","moves","do","info","i"]
+  let possibleCmds = prevCmds ++ ["wat","chrs","statusOf","moves","do","info","i","exit"]
   onlyState $ when' (cmd == "wat") $ lift $ fromIO $ do
     putStrLn "chrs: Tells you which characters live along with their ids"
-    putStrLn "moves [chrID]: Tells you the moves of a character"
+    putStrLn "moves: Tells you the moves of the current character"
     putStrLn "(statusOf/info/i) [chrID]: Tells you the current status of a character"
     putStrLn "do [mvID (self move)]: Perform a self-targeting move"
     putStrLn "do [mvID (any/enemy/ally move)] [targetID]: Perform a character targeting move"
-    putStrLn "(prev/pr): Previous action of the current character"
+    putStrLn "(prev/pr): Re-run the previous \"do\" action"
+    putStrLn "exit: Exit the battle"
     return False
   onlyState $ when' (cmd `elem` prevCmds) $ lift $ do
     prevFull <- fmap getPrevCmd $ getChr yourID
@@ -293,8 +297,8 @@ humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runSta
         return False
       Just chr -> lift $ fromIO $ do
         putStrLn $ "Status of " ++ (getChrName chr) ++ " (" ++ chrID ++ ")"
-        putStrLn $ "HP: " ++ (show $ getHP chr)
-        putStrLn $ "IP: " ++ (show $ getInspiration chr)
+        putStrLn $ "HP: " ++ (show $ getHP chr) ++ "/" ++ (show $ getMaxHP chr)
+        putStrLn $ "IP: " ++ (show $ getInspiration chr) ++ "/" ++ (show $ getMaxInspiration chr)
         let allStatuses = concat $ map snd $ getStatusTable chr
         putStrLn $ "Statuses:"
         stRes <- forM allStatuses $ 
@@ -347,10 +351,16 @@ humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runSta
                 if (not $ allyTMAndDiff || enemyTMAndSame) 
                   then runMove yourID mv [yourID,tarID]
                   else return False
+  onlyState $ when' (cmd == "exit") $ lift $ do
+    fromIO $ putStrLn $ "Are you sure? (type y for yes, anything else for no)"
+    exitResponse <- fromIO $ getLine
+    if (exitResponse == "y")
+      then brek Exit
+      else return False
   onlyState $ when' (not $ elem cmd possibleCmds) $ do
     lift $ fromIO $ putStrLn $ "Invalid command!"
     return False
-  when (not $ elem cmd prevCmds) $ 
+  when (cmd == "do") $
     lift $ lift $ modChrBy yourID $ \chr -> chr { getPrevCmd = prompt }
                 
 humanTurnHandler :: ChrID -> BattleIO ()
@@ -424,6 +434,8 @@ receiveInspiration chrID num = do
   maxInsp <- fmap getMaxInspiration $ getChr chrID
   let newInsp = oldInsp + num
   fromIO $ putStrLn $ name ++ " received " ++ (show num) ++ " inspiration!"
+  let realNewInsp = max 0 $ min maxInsp newInsp
+  fromIO $ putStrLn $ name ++ " now has " ++ (show realNewInsp) ++ " inspiration!"
   modChrBy chrID $ \chr -> chr { getInspiration = max 0 $ min maxInsp newInsp }
 
 -- HP affecting monads
@@ -432,8 +444,11 @@ modHP :: ChrID -> Double -> BattleIO ()
 modHP chrID num = do
   oldHP <- fmap getHP $ getChr chrID
   maxHP <- fmap getMaxHP $ getChr chrID
+  chrName <- fmap getChrName $ getChr chrID
   let newHP = oldHP + (iint num)
-  modChrBy chrID $ \chr -> chr { getHP = min maxHP newHP }
+  let realNewHP = min maxHP newHP
+  fromIO $ putStrLn $ chrName ++ " now has " ++ (show realNewHP) ++ " HP!"
+  modChrBy chrID $ \chr -> chr { getHP = realNewHP }
  
 
 damageTarget :: ChrID -> ChrID -> Element -> Double -> BattleIO ()
@@ -450,9 +465,9 @@ damageTarget atkI tarI ele dmg = do
   -- Get received damage
   newDmg <- fmap getTmpDmg $ getChr tarI
   -- Modify health
-  modHP tarI (negate newDmg)
   fromIO $ putStrLn $ (getChrName attacker) ++ " dealt " ++ (show $ iint newDmg) 
     ++ " " ++ (show ele) ++ " damage to " ++ (getChrName target) ++ "!"
+  modHP tarI (negate newDmg)
 
 healTarget :: ChrID -> ChrID -> Element -> Double -> BattleIO ()
 healTarget atkI tarI ele dmg = do
@@ -468,8 +483,8 @@ healTarget atkI tarI ele dmg = do
   -- Get received damage
   newDmg <- fmap getTmpDmg $ getChr tarI
   -- Modify health
-  modHP tarI newDmg
   fromIO $ putStrLn $ (getChrName attacker) ++ " healed " ++ (getChrName target) ++  " by " ++ (show $ iint newDmg) ++ "! (" ++ (show ele) ++ ")"
+  modHP tarI newDmg
 
 passiveDamage :: ChrID -> Element -> Double -> BattleIO ()
 passiveDamage tarI ele dmg = do
@@ -483,9 +498,9 @@ passiveDamage tarI ele dmg = do
   -- Get received damage
   newDmg <- fmap getTmpDmg $ getChr tarI
   -- Modify health
-  modHP tarI (negate newDmg)
   fromIO $ putStrLn $ (getChrName target) ++ " took " ++ (show $ iint newDmg) 
     ++ " " ++ (show ele) ++ " damage over time!"
+  modHP tarI (negate newDmg)
 
 -- TODO: Copy and past to make passiveHeal
 
