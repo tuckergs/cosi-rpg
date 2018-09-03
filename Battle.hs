@@ -1,7 +1,10 @@
 
+{-# LANGUAGE LambdaCase #-}
+
 module Battle where
 
 import Control.Monad
+import Control.Monad.Identity
 import Control.Monad.Trans.State.Lazy
 import Control.Monad.Trans.Except
 import Control.Monad.Trans.Class
@@ -250,9 +253,7 @@ runMove yourID mv ls = do
   yourInsp <- fmap getInspiration $ getChr yourID
   let requiredInsp = inspirationNeeded mv
   if (yourInsp < requiredInsp) 
-    then do
-      fromIO $ putStrLn $ "More inspiration is required to use this move!"
-      return False
+    then return False
     else do
       when (requiredInsp > 0) $ fromIO $ do
         putStrLn $ yourName ++ " spends " ++ (show requiredInsp) ++ " inspiration!"
@@ -262,120 +263,121 @@ runMove yourID mv ls = do
       getMoveCode mv ls
       return True
 
-
-humanTurnParser :: ChrID -> String -> BattleIO Bool
-humanTurnParser yourID prompt = fmap fst $ runStateTF prompt $ fmap snd $ runStateTF False $ do
-  cmd <- lift $ getNextWord
-  let prevCmds = ["prev","pr"]
-  let possibleCmds = prevCmds ++ ["wat","chrs","statusOf","moves","do","info","i","exit"]
-  onlyState $ when' (cmd == "wat") $ lift $ fromIO $ do
-    putStrLn "chrs: Tells you which characters live along with their ids"
-    putStrLn "moves: Tells you the moves of the current character"
-    putStrLn "(statusOf/info/i) [chrID]: Tells you the current status of a character"
-    putStrLn "do [mvID (self move)]: Perform a self-targeting move"
-    putStrLn "do [mvID (any/enemy/ally move)] [targetID]: Perform a character targeting move"
-    putStrLn "(prev/pr): Re-run the previous \"do\" action"
-    putStrLn "exit: Exit the battle"
-    return False
-  onlyState $ when' (cmd `elem` prevCmds) $ lift $ do
-    prevFull <- fmap getPrevCmd $ getChr yourID
-    fromIO $ putStrLn $ prevFull
-    humanTurnParser yourID prevFull
-  onlyState $ when' (cmd == "chrs") $ lift $ do
-    env <- getEnv
-    fromIO $ putStrLn "Here are the characters who are alive"
-    fromIO $ forM_ env $ 
-      \(chrID,chr) -> putStrLn $ getChrName chr ++ " ( with id " ++ chrID ++ " )"
-    fromIO $ putStrLn "You can use these ids to look up info with statusOf"
-    return False
-  onlyState $ when' (cmd `elem` ["statusOf","info","i"]) $ do
-    chrID <- getNextWord
-    chrMaybe <- lift $ getChrMaybe chrID
-    case chrMaybe of
-      Nothing -> do
-        lift $ fromIO $ putStrLn $ chrID ++ " is not a valid character id"
-        return False
-      Just chr -> lift $ fromIO $ do
-        putStrLn $ "Status of " ++ (getChrName chr) ++ " (" ++ chrID ++ ")"
-        putStrLn $ "HP: " ++ (show $ getHP chr) ++ "/" ++ (show $ getMaxHP chr)
-        putStrLn $ "IP: " ++ (show $ getInspiration chr) ++ "/" ++ (show $ getMaxInspiration chr)
-        let allStatuses = concat $ map snd $ getStatusTable chr
-        putStrLn $ "Statuses:"
-        stRes <- forM allStatuses $ 
-          \st -> if (isHidden st) then return () else do
-            putStrLn $ (getStatusName st)
-            putStrLn $ "  Turns left: " ++ (show $ getNumTurns st)
-            putStrLn $ "  Description: " ++ (getStatusDescription st)
-        when (null stRes) $ putStrLn "(no statuses)"
-        return False
-  onlyState $ when' (cmd == "moves") $ do
-    mvTable <- fmap getMoveTable $ lift $ getChr yourID
-    lift $ fromIO $ putStrLn "Here are your moves:"
-    lift $ fromIO $ forM_ mvTable $ \(mvID,mv) -> do
-      putStrLn $ "Name: " ++ getMoveName mv ++ " (id " ++ mvID ++ ")"
-      putStrLn $ "  Description: " ++ getMoveDescription mv
-      putStrLn $ "  Targets: " ++ (show $ getTargetMode mv)
-      putStrLn $ "  Inspiration needed: " ++ (show $ inspirationNeeded mv)
-    return False
-  onlyState $ when' (cmd == "do") $ do
-    mvID <- getNextWord
-    mvMaybe <- lift $ getMoveMaybe yourID mvID 
-    case mvMaybe of
-      Nothing -> do
-        lift $ fromIO $ putStrLn $ mvID ++ " is not a valid move id"
-        return False
-      Just mv -> do
-        let targetMode = getTargetMode mv 
-        tarID <- getNextWord
-        lift $ fmap snd $ runStateTF False $ do -- I'm done with parsing the word
-          onlyState $ when' (targetMode == SelfTM) $ do
-            if (tarID `elem` ["",yourID])
-              then runMove yourID mv [yourID]
-              else do
-                fromIO $ putStrLn "Self targeting moves must be of the form:"
-                fromIO $ putStrLn "  do mvID / do mvID yourID"
-                return False
-          onlyState $ when' (targetMode `elem` [AnyTM,AllyTM,EnemyTM]) $ do
-            yourTeam <- ((return . getTeam) <=< getChr) $ yourID
-            tarMaybe <- getChrMaybe tarID
-            case tarMaybe of
-              Nothing -> do
-                fromIO $ putStrLn $ tarID ++ " is not a valid character id"
-                return False
-              Just tar -> do
-                let tarTeam = getTeam tar
-                let allyTMAndDiff = targetMode == AllyTM && tarTeam /= yourTeam
-                let enemyTMAndSame = targetMode == EnemyTM && tarTeam == yourTeam
-                when allyTMAndDiff $ fromIO $ putStrLn $ "You can\'t target an enemy with an ally-targeting attack"
-                when enemyTMAndSame $ fromIO $ putStrLn $ "You can\'t target an ally with an enemy-targeting attack"
-                if (not $ allyTMAndDiff || enemyTMAndSame) 
-                  then runMove yourID mv [yourID,tarID]
-                  else return False
-  onlyState $ when' (cmd == "exit") $ lift $ do
-    fromIO $ putStrLn $ "Are you sure? (type y for yes, anything else for no)"
-    exitResponse <- fromIO $ getLine
-    if (exitResponse == "y")
-      then brek Exit
-      else return False
-  onlyState $ when' (not $ elem cmd possibleCmds) $ do
-    lift $ fromIO $ putStrLn $ "Invalid command!"
-    return False
-  when (cmd == "do") $
-    lift $ lift $ modChrBy yourID $ \chr -> chr { getPrevCmd = prompt }
-                
 humanTurnHandler :: ChrID -> BattleIO ()
-humanTurnHandler chrI = do
-  curChr <- getChr chrI
-  let name = getChrName curChr
-  fromIO $ putStrLn $ "It\'s " ++ name ++ "\'s turn to move!"
-  doStuff
-  where 
-    doStuff = do
+humanTurnHandler yourID = do
+  yourChrName <- fmap getChrName $ getChr yourID
+  fromIO $ putStrLn $ "It\'s " ++ yourChrName ++ "\'s turn to move!"
+  getPrompt
+  where
+    getPrompt = do
       fromIO $ putStrLn $ "What will you do? Type wat for help"
-      response <- fromIO $ getLine
-      fromIO $ putStrLn $ ""
-      finished <- humanTurnParser chrI response
-      when (not finished) doStuff
+      response <- fromIO getLine
+      fromIO $ putStrLn ""
+      parseResponse response
+    parseResponse response = do
+      let 
+        args = fst $ runIdentity $ runStateT getAllWords response
+        cmd = args !! 0
+        prevCmds = ["prev","pr"]
+        possibleCmds = prevCmds ++ ["wat","chrs","statusOf","moves","do","info","i","exit"]
+      when (cmd == "wat") $ do
+        fromIO $ do 
+          putStrLn "chrs: Tells you which characters live along with their ids"
+          putStrLn "moves: Tells you the moves of the current character"
+          putStrLn "(statusOf/info/i) [chrID]: Tells you the current status of a character"
+          putStrLn "do [mvID (self move)]: Perform a self-targeting move"
+          putStrLn "do [mvID (any/enemy/ally move)] [targetID]: Perform a character targeting move"
+          putStrLn "(prev/pr): Re-run the previous \"do\" action"
+          putStrLn "exit: Exit the battle"
+        getPrompt
+      when (cmd `elem` prevCmds) $ do
+        prevFull <- fmap getPrevCmd $ getChr yourID
+        fromIO $ putStrLn $ prevFull
+        parseResponse prevFull
+      when (cmd == "chrs") $ do
+        env <- getEnv
+        fromIO $ putStrLn "Here are the characters who are alive"
+        fromIO $ forM_ env $ 
+          \(chrID,chr) -> putStrLn $ getChrName chr ++ " ( with id " ++ chrID ++ " )"
+        fromIO $ putStrLn "You can use these ids to look up info with statusOf"
+        getPrompt
+      when (cmd `elem` ["statusOf","info","i"]) $ do
+        let (_:chrID:_) = args
+        (getChrMaybe chrID >>=) $ \case
+          Nothing -> do
+            fromIO $ putStrLn $ chrID ++ " is not a valid character id"
+          Just chr -> fromIO $ do
+            putStrLn $ "Status of " ++ (getChrName chr) ++ " (" ++ chrID ++ ")"
+            putStrLn $ "HP: " ++ (show $ getHP chr) ++ "/" ++ (show $ getMaxHP chr)
+            putStrLn $ "IP: " ++ (show $ getInspiration chr) ++ "/" ++ (show $ getMaxInspiration chr)
+            let allStatuses = concat $ map snd $ getStatusTable chr
+            putStrLn $ "Statuses:"
+            stRes <- forM allStatuses $ 
+              \st -> if (isHidden st) then return () else do
+                putStrLn $ (getStatusName st)
+                putStrLn $ "  Turns left: " ++ (show $ getNumTurns st)
+                putStrLn $ "  Description: " ++ (getStatusDescription st)
+            when (null stRes) $ putStrLn "(no statuses)"
+        getPrompt
+      when (cmd == "moves") $ do
+        mvTable <- fmap getMoveTable $ getChr yourID
+        fromIO $ putStrLn "Here are your moves:"
+        fromIO $ forM_ mvTable $ \(mvID,mv) -> do
+          putStrLn $ "Name: " ++ getMoveName mv ++ " (id " ++ mvID ++ ")"
+          putStrLn $ "  Description: " ++ getMoveDescription mv
+          putStrLn $ "  Targets: " ++ (show $ getTargetMode mv)
+          putStrLn $ "  Inspiration needed: " ++ (show $ inspirationNeeded mv)
+        getPrompt
+      when (cmd == "do") $ do
+        let (_:mvID:tarID:_) = args
+        mvMaybe <- getMoveMaybe yourID mvID 
+        case mvMaybe of
+          Nothing -> do
+            fromIO $ putStrLn $ mvID ++ " is not a valid move id"
+            getPrompt
+          Just mv -> do
+            let targetMode = getTargetMode mv 
+                rnMv = 
+                  (runMove yourID mv [yourID,tarID] >>=) $ \case
+                    False -> do
+                      fromIO $ putStrLn "More inspiration is required to use this move!"
+                      getPrompt
+                    True -> return ()
+            when (targetMode == SelfTM) $ do
+              if (tarID `elem` ["",yourID])
+                then rnMv
+                else do
+                  fromIO $ putStrLn "Self targeting moves must be of the form:"
+                  fromIO $ putStrLn "  do mvID / do mvID yourID"
+                  getPrompt
+            when (targetMode `elem` [AnyTM,AllyTM,EnemyTM]) $ do
+              yourTeam <- ((return . getTeam) <=< getChr) $ yourID
+              tarMaybe <- getChrMaybe tarID
+              case tarMaybe of
+                Nothing -> do
+                  fromIO $ putStrLn $ tarID ++ " is not a valid character id"
+                  getPrompt
+                Just tar -> do
+                  let tarTeam = getTeam tar
+                  let allyTMAndDiff = targetMode == AllyTM && tarTeam /= yourTeam
+                  let enemyTMAndSame = targetMode == EnemyTM && tarTeam == yourTeam
+                  when allyTMAndDiff $ fromIO $ putStrLn $ "You can\'t target an enemy with an ally-targeting attack"
+                  when enemyTMAndSame $ fromIO $ putStrLn $ "You can\'t target an ally with an enemy-targeting attack"
+                  if (not $ allyTMAndDiff || enemyTMAndSame) 
+                    then rnMv
+                    else getPrompt
+      when (cmd == "exit") $ do
+        fromIO $ putStrLn $ "Are you sure? (type y for yes, anything else for no)"
+        exitResponse <- fromIO $ getLine
+        if (exitResponse == "y")
+          then brek Exit
+          else getPrompt
+      when (not $ elem cmd possibleCmds) $ do
+        fromIO $ putStrLn $ "Invalid command!"
+        getPrompt
+      when (cmd == "do") $ modChrBy yourID $ \chr -> chr { getPrevCmd = response }
+
+
 
 -- Functions that are expected to be used!
 

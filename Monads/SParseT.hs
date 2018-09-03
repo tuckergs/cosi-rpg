@@ -52,6 +52,11 @@ getNextWord = do
     -- [] -> return (reverse res,[])
     -- (i:is) -> do
       
+getAllWords :: (Monad m) => SParseT m [String]
+getAllWords = do
+  s <- getNextWord
+  ss <- getAllWords
+  return $ s:ss
     
   
   
